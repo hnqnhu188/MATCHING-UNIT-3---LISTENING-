@@ -3,47 +3,129 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trò chơi Ghép thẻ Từ vựng - Kết quả rõ ràng</title>
+    <title>Trò chơi Ghép thẻ Từ vựng - Admin Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, limit, doc, deleteDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'vocabulary-game';
+
+        window.db = db;
+        window.appId = appId;
+        window.auth = auth;
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+            }
+        };
+        initAuth();
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                window.currentUser = user;
+                loadLeaderboard();
+            }
+        });
+
+        function loadLeaderboard() {
+            if (!window.currentUser) return;
+            const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
+            
+            onSnapshot(leaderboardCol, (snapshot) => {
+                const scores = [];
+                snapshot.forEach(docSnap => {
+                    const data = docSnap.data();
+                    data.docId = docSnap.id; // Quan trọng: Lưu ID để xóa
+                    scores.push(data);
+                });
+                
+                const sortedScores = scores.sort((a, b) => a.seconds - b.seconds);
+                updateLeaderboardUI(sortedScores.slice(0, 10));
+                window.allScores = sortedScores;
+            }, (error) => {
+                console.error("Firestore Error:", error);
+            });
+        }
+
+        function updateLeaderboardUI(scores) {
+            const listEl = document.getElementById('leaderboard-list');
+            if (!listEl) return;
+            listEl.innerHTML = scores.map((s, i) => `
+                <div class="flex justify-between items-center p-2 border-b border-slate-100 ${i === 0 ? 'bg-yellow-50 rounded-lg' : ''}">
+                    <span class="flex items-center gap-2">
+                        <span class="font-bold w-6 text-slate-400">${i + 1}.</span>
+                        <span class="font-medium text-slate-700">${s.playerName}</span>
+                    </span>
+                    <span class="font-mono text-blue-600 font-bold">${s.seconds}s</span>
+                </div>
+            `).join('') || '<p class="text-center text-slate-400 py-4 italic">Chưa có kỷ lục nào</p>';
+        }
+
+        window.saveScore = async (name, time) => {
+            if (!window.currentUser) return;
+            try {
+                const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
+                await addDoc(leaderboardCol, {
+                    playerName: name,
+                    seconds: time,
+                    timestamp: Date.now(),
+                    userId: window.currentUser.uid
+                });
+            } catch (error) {
+                console.error("Save Error:", error);
+            }
+        };
+
+        // Hàm xóa toàn bộ sử dụng WriteBatch để tối ưu hiệu suất
+        window.clearAllResults = async () => {
+            if (!confirm("Bạn có chắc chắn muốn xóa TOÀN BỘ kết quả không?")) return;
+            
+            try {
+                const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
+                const querySnapshot = await getDocs(leaderboardCol);
+                
+                if (querySnapshot.empty) {
+                    alert("Không có kết quả nào để xóa.");
+                    return;
+                }
+
+                const batch = writeBatch(db);
+                querySnapshot.forEach((docSnap) => {
+                    batch.delete(docSnap.ref);
+                });
+
+                await batch.commit();
+                alert("Đã dọn dẹp bảng xếp hạng thành công!");
+                closeAdminModal();
+            } catch (error) {
+                console.error("Delete Error:", error);
+                alert("Lỗi: Không thể xóa dữ liệu. Hãy kiểm tra lại 'Rules' trong Firebase Console của bạn.");
+            }
+        };
+    </script>
     <style>
-        .card {
-            transition: all 0.3s ease;
-            cursor: pointer;
-            position: relative;
-        }
-        .card.selected {
-            border-color: #3b82f6;
-            background-color: #eff6ff;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
-            transform: translateY(-2px);
-        }
-        .card.incorrect {
-            animation: shake 0.5s linear;
-            border-color: #ef4444;
-            background-color: #fef2f2;
-        }
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-5px); }
-            75% { transform: translateX(5px); }
-        }
-        .matched-row {
-            animation: slideIn 0.5s ease-out forwards;
-        }
-        @keyframes slideIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .card-text {
-            display: -webkit-box;
-            -webkit-line-clamp: 3;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-            word-break: break-word;
-        }
-        #login-screen {
-            background-image: radial-gradient(circle at center, #f8fafc 0%, #e2e8f0 100%);
-        }
+        .card { transition: all 0.3s ease; cursor: pointer; position: relative; }
+        .card.selected { border-color: #3b82f6; background-color: #eff6ff; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3); transform: translateY(-2px); }
+        .card.incorrect { animation: shake 0.5s linear; border-color: #ef4444; background-color: #fef2f2; }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+        .matched-row { animation: slideIn 0.5s ease-out forwards; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .card-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+        #login-screen { background-image: radial-gradient(circle at center, #f8fafc 0%, #e2e8f0 100%); }
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen p-2 md:p-8 font-sans text-gray-800">
@@ -57,7 +139,7 @@
                     </svg>
                 </div>
                 <h2 class="text-2xl font-bold text-slate-800">Chào mừng bạn!</h2>
-                <p class="text-slate-500 mt-2">Nhập tên để bắt đầu thử thách</p>
+                <p class="text-slate-500 mt-2">Nhập tên để tham gia bảng xếp hạng</p>
             </div>
             <div class="space-y-4">
                 <input type="text" id="player-name-input" placeholder="Tên của bạn..." 
@@ -69,43 +151,111 @@
         </div>
     </div>
 
-    <div class="max-w-7xl mx-auto blur-sm" id="main-content">
-        <header class="text-center mb-6">
-            <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 mb-2">Ghép 3 Cột Từ Vựng</h1>
-            <p id="player-display" class="text-blue-600 font-semibold mb-1"></p>
-            <div class="flex justify-center gap-4 text-xs md:text-sm font-medium">
-                <span id="score" class="bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">Tiến độ: 0/10</span>
-                <span id="timer" class="bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">Thời gian: 0s</span>
-            </div>
-        </header>
-
-        <!-- Khu vực chơi chính -->
-        <div class="grid grid-cols-3 gap-x-2 md:gap-x-8 gap-y-3 mb-10" id="game-board">
-            <div id="words-column" class="flex flex-col gap-3"></div>
-            <div id="defs-column" class="flex flex-col gap-3"></div>
-            <div id="vi-column" class="flex flex-col gap-3"></div>
-        </div>
-
-        <!-- Khu vực hiển thị các từ đã ghép đúng (Hàng ngang rõ ràng) -->
-        <div id="matched-container" class="mt-8 pt-8 border-t-2 border-dashed border-slate-200">
-            <h3 class="text-center text-slate-400 font-bold uppercase tracking-widest text-xs mb-6">Danh sách đã hoàn thành</h3>
-            <div id="matched-list" class="flex flex-col gap-2">
-                <!-- Các hàng đúng sẽ hiện ở đây -->
-            </div>
-        </div>
-
-        <div id="win-message" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-md flex items-center justify-center z-50">
-            <div class="bg-white p-10 rounded-2xl shadow-2xl text-center max-w-sm mx-4 border-2 border-green-500">
-                <div class="text-6xl mb-4">🎉</div>
-                <h2 class="text-2xl font-bold text-slate-900 mb-2" id="congrats-name">Chúc mừng!</h2>
-                <div class="bg-slate-50 p-4 rounded-xl mb-6 border border-slate-100 mt-4">
-                    <p class="text-sm text-slate-500 uppercase font-bold">Thời gian hoàn thành</p>
-                    <p id="final-time-display" class="text-3xl font-black text-blue-600"></p>
+    <div class="max-w-7xl mx-auto blur-sm flex flex-col lg:flex-row gap-8" id="main-content">
+        <!-- Game Column -->
+        <div class="flex-1">
+            <header class="text-center mb-6">
+                <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 mb-2">Ghép 3 Cột Từ Vựng</h1>
+                <p id="player-display" class="text-blue-600 font-semibold mb-1"></p>
+                <div class="flex justify-center gap-4 text-xs md:text-sm font-medium">
+                    <span id="score" class="bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">Tiến độ: 0/10</span>
+                    <span id="timer" class="bg-white px-4 py-2 rounded-full shadow-sm border border-slate-200">Thời gian: 0s</span>
                 </div>
-                <button onclick="location.reload()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 px-6 rounded-xl transition shadow-lg">
-                    Chơi lại từ đầu
+            </header>
+
+            <div class="grid grid-cols-3 gap-x-2 md:gap-x-6 gap-y-3 mb-10" id="game-board">
+                <div id="words-column" class="flex flex-col gap-3"></div>
+                <div id="defs-column" class="flex flex-col gap-3"></div>
+                <div id="vi-column" class="flex flex-col gap-3"></div>
+            </div>
+
+            <div id="matched-container" class="mt-8 pt-8 border-t-2 border-dashed border-slate-200">
+                <h3 class="text-center text-slate-400 font-bold uppercase tracking-widest text-xs mb-6">Đã hoàn thành</h3>
+                <div id="matched-list" class="flex flex-col gap-2"></div>
+            </div>
+        </div>
+
+        <!-- Leaderboard Column -->
+        <div class="w-full lg:w-80 shrink-0">
+            <div class="bg-white rounded-3xl shadow-xl border border-slate-100 p-6 sticky top-8">
+                <div class="flex items-center gap-2 mb-6">
+                    <div class="p-2 bg-yellow-100 rounded-lg text-yellow-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                        </svg>
+                    </div>
+                    <h3 class="font-bold text-lg text-slate-800">Top 10 Kỷ Lục</h3>
+                </div>
+                <div id="leaderboard-list" class="space-y-1 mb-6">
+                    <div class="animate-pulse flex flex-col gap-2">
+                        <div class="h-10 bg-slate-100 rounded-lg"></div>
+                        <div class="h-10 bg-slate-100 rounded-lg"></div>
+                    </div>
+                </div>
+                
+                <button onclick="openAdminAuth()" class="w-full flex items-center justify-center gap-2 py-3 px-4 border-2 border-slate-100 rounded-xl text-slate-400 hover:text-blue-600 hover:border-blue-100 transition-all font-medium text-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                    Dành cho Giáo viên
                 </button>
             </div>
+        </div>
+    </div>
+
+    <!-- Modal Admin Auth -->
+    <div id="admin-auth-modal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Xác minh Giáo viên</h3>
+            <input type="password" id="admin-password" class="w-full p-3 border-2 border-slate-200 rounded-xl mb-4 focus:border-blue-500 outline-none" placeholder="Mật khẩu (01026018)">
+            <div class="flex gap-3">
+                <button onclick="closeAdminAuth()" class="flex-1 py-2 text-slate-500 font-medium">Hủy</button>
+                <button onclick="verifyAdmin()" class="flex-1 py-2 bg-blue-600 text-white rounded-lg font-bold">Xác nhận</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Admin Dashboard -->
+    <div id="admin-dashboard-modal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+            <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+                <div>
+                    <h3 class="text-xl font-bold text-slate-800">Bảng điều khiển Giáo viên</h3>
+                    <p class="text-sm text-slate-500">Xem và quản lý tất cả kết quả bài làm</p>
+                </div>
+                <button onclick="closeAdminModal()" class="text-slate-400 hover:text-slate-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="p-6 overflow-y-auto flex-1">
+                <div id="admin-full-list" class="space-y-2"></div>
+            </div>
+            <div class="p-6 border-t flex justify-between items-center bg-white">
+                <button onclick="window.clearAllResults()" class="flex items-center gap-2 text-red-500 font-bold hover:bg-red-50 px-4 py-2 rounded-xl transition-all border border-red-100">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Xóa sạch dữ liệu bài làm
+                </button>
+                <p id="total-players" class="text-slate-400 text-sm font-medium"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Win Message -->
+    <div id="win-message" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-md flex items-center justify-center z-50">
+        <div class="bg-white p-10 rounded-2xl shadow-2xl text-center max-w-sm mx-4 border-2 border-green-500">
+            <div class="text-6xl mb-4">🎉</div>
+            <h2 class="text-2xl font-bold text-slate-900 mb-2" id="congrats-name">Chúc mừng!</h2>
+            <div class="bg-slate-50 p-4 rounded-xl mb-6 border border-slate-100 mt-4">
+                <p class="text-sm text-slate-500 uppercase font-bold">Thời gian của bạn</p>
+                <p id="final-time-display" class="text-3xl font-black text-blue-600"></p>
+            </div>
+            <button onclick="location.reload()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 px-6 rounded-xl transition shadow-lg">
+                Chơi lại từ đầu
+            </button>
         </div>
     </div>
 
@@ -122,16 +272,13 @@
                 oscillator.frequency.setValueAtTime(523, audioCtx.currentTime);
                 oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.2);
                 gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
             } else if (type === 'incorrect') {
                 oscillator.type = 'sawtooth';
                 oscillator.frequency.setValueAtTime(220, audioCtx.currentTime);
                 gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
-                gainNode.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
             } else {
                 oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
                 gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
             }
             oscillator.start();
             oscillator.stop(audioCtx.currentTime + 0.3);
@@ -167,9 +314,7 @@
             createBoard();
         }
 
-        function shuffle(array) {
-            return [...array].sort(() => Math.random() - 0.5);
-        }
+        function shuffle(array) { return [...array].sort(() => Math.random() - 0.5); }
 
         function createBoard() {
             const cols = { word: 'words-column', def: 'defs-column', vi: 'vi-column' };
@@ -192,17 +337,14 @@
         function handleSelect(el) {
             if (isProcessing || el.classList.contains('opacity-0')) return;
             playSound('select');
-
             const type = el.dataset.type;
             if (selected[type]) selected[type].classList.remove('selected');
-            
             if (selected[type] === el) {
                 selected[type] = null;
             } else {
                 selected[type] = el;
                 el.classList.add('selected');
             }
-
             if (selected.word && selected.def && selected.vi) checkMatch();
             if (matchedCount === 0 && !timerInterval) startTimer();
         }
@@ -211,18 +353,13 @@
             isProcessing = true;
             const isCorrect = (selected.word.dataset.id === selected.def.dataset.id) && 
                               (selected.word.dataset.id === selected.vi.dataset.id);
-
             if (isCorrect) {
                 playSound('correct');
                 addMatchedRow(selected.word.dataset.value, selected.def.dataset.value, selected.vi.dataset.value);
-                
-                // Ẩn các thẻ cũ thay vì trượt chúng
                 [selected.word, selected.def, selected.vi].forEach(el => {
                     el.style.opacity = "0";
                     el.style.pointerEvents = "none";
-                    el.classList.remove('selected');
                 });
-
                 matchedCount++;
                 document.getElementById('score').textContent = `Tiến độ: ${matchedCount}/10`;
                 selected = { word: null, def: null, vi: null };
@@ -242,13 +379,13 @@
         function addMatchedRow(word, def, vi) {
             const list = document.getElementById('matched-list');
             const row = document.createElement('div');
-            row.className = "matched-row grid grid-cols-3 gap-2 md:gap-8 bg-green-50 border border-green-200 p-3 rounded-xl shadow-sm";
+            row.className = "matched-row grid grid-cols-3 gap-2 bg-green-50 border border-green-200 p-3 rounded-xl shadow-sm";
             row.innerHTML = `
                 <div class="text-center font-bold text-green-700 text-sm flex items-center justify-center">${word}</div>
-                <div class="text-center text-xs text-green-600 flex items-center justify-center italic px-1">${def}</div>
+                <div class="text-center text-[10px] text-green-600 flex items-center justify-center italic px-1">${def}</div>
                 <div class="text-center font-medium text-green-700 text-sm flex items-center justify-center">${vi}</div>
             `;
-            list.prepend(row); // Hiện cái mới nhất lên đầu danh sách đã xong
+            list.prepend(row);
         }
 
         function startTimer() {
@@ -262,9 +399,43 @@
             clearInterval(timerInterval);
             document.getElementById('congrats-name').textContent = `Tuyệt vời, ${playerName}!`;
             document.getElementById('final-time-display').textContent = `${seconds} Giây`;
+            if (window.saveScore) window.saveScore(playerName, seconds);
             setTimeout(() => {
                 document.getElementById('win-message').classList.remove('hidden');
             }, 800);
+        }
+
+        // Admin Helpers
+        function openAdminAuth() {
+            document.getElementById('admin-auth-modal').classList.remove('hidden');
+            document.getElementById('admin-password').focus();
+        }
+        function closeAdminAuth() {
+            document.getElementById('admin-auth-modal').classList.add('hidden');
+            document.getElementById('admin-password').value = "";
+        }
+        function verifyAdmin() {
+            if (document.getElementById('admin-password').value === "01026018") {
+                closeAdminAuth();
+                openAdminDashboard();
+            } else {
+                alert("Mật khẩu không chính xác.");
+            }
+        }
+        function openAdminDashboard() {
+            const scores = window.allScores || [];
+            const listEl = document.getElementById('admin-full-list');
+            document.getElementById('total-players').textContent = `Có ${scores.length} người đã chơi`;
+            listEl.innerHTML = scores.map(s => `
+                <div class="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100">
+                    <div><p class="font-bold text-slate-800">${s.playerName}</p></div>
+                    <div class="text-right"><p class="font-black text-blue-600">${s.seconds}s</p></div>
+                </div>
+            `).join('') || '<p class="text-center py-8 text-slate-400 italic">Không có dữ liệu.</p>';
+            document.getElementById('admin-dashboard-modal').classList.remove('hidden');
+        }
+        function closeAdminModal() {
+            document.getElementById('admin-dashboard-modal').classList.add('hidden');
         }
     </script>
 </body>
