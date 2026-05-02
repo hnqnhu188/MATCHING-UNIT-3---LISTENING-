@@ -11,7 +11,17 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, query, limit, doc, deleteDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // Cấu hình Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyD_TT9eFvqOwAeoBGeWMSO5ojo8v72m7i0",
+            authDomain: "game-matching-2e001.firebaseapp.com",
+            projectId: "game-matching-2e001",
+            storageBucket: "game-matching-2e001.firebasestorage.app",
+            messagingSenderId: "401167247156",
+            appId: "1:401167247156:web:71b79245d4c005484b2761",
+            measurementId: "G-KK45798GYC"
+        };
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -21,43 +31,78 @@
         window.appId = appId;
         window.auth = auth;
 
+        // RULE 3: Đảm bảo Auth hoàn tất trước khi query Firestore
+        // Thêm cơ chế chờ đợi Auth thực sự sẵn sàng
+        let authReady = false;
+
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } catch (e) {
+                        await signInAnonymously(auth);
+                    }
                 } else {
                     await signInAnonymously(auth);
                 }
             } catch (error) {
-                console.error("Auth Error:", error);
+                console.error("Xác thực thất bại:", error);
+                // Nếu lỗi mạng, thử lại sau 2 giây
+                setTimeout(initAuth, 2000);
             }
         };
+
         initAuth();
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 window.currentUser = user;
+                authReady = true;
+                console.log("Đã đăng nhập thành công với UID:", user.uid);
+                // Chỉ gọi load dữ liệu khi Auth đã chắc chắn hoàn tất
                 loadLeaderboard();
+            } else {
+                authReady = false;
             }
         });
 
         function loadLeaderboard() {
-            if (!window.currentUser) return;
+            // Bảo vệ chặt chẽ hơn: nếu chưa auth hoặc chưa sẵn sàng thì không query
+            if (!authReady || !window.currentUser) {
+                console.warn("Chờ xác thực trước khi tải bảng xếp hạng...");
+                return;
+            }
+            
+            // RULE 1: Đường dẫn collection cố định theo cấu trúc yêu cầu
             const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
             
+            // Lắng nghe dữ liệu với xử lý lỗi Permission
             onSnapshot(leaderboardCol, (snapshot) => {
                 const scores = [];
                 snapshot.forEach(docSnap => {
                     const data = docSnap.data();
-                    data.docId = docSnap.id; // Quan trọng: Lưu ID để xóa
+                    data.docId = docSnap.id;
                     scores.push(data);
                 });
                 
+                // RULE 2: Sắp xếp tại client để tránh lỗi Index
                 const sortedScores = scores.sort((a, b) => a.seconds - b.seconds);
                 updateLeaderboardUI(sortedScores.slice(0, 10));
                 window.allScores = sortedScores;
             }, (error) => {
-                console.error("Firestore Error:", error);
+                console.error("Lỗi Firestore (Quyền truy cập):", error);
+                if (error.code === 'permission-denied') {
+                    const listEl = document.getElementById('leaderboard-list');
+                    if (listEl) {
+                        listEl.innerHTML = `
+                            <div class="p-3 bg-red-50 border border-red-100 rounded-xl text-[10px] text-red-600">
+                                <b>Lỗi quyền truy cập!</b><br>
+                                Vui lòng kiểm tra lại tab Rules trong Firebase Console. 
+                                Quy tắc phải là: allow read, write: if true;
+                            </div>`;
+                    }
+                }
             });
         }
 
@@ -72,11 +117,15 @@
                     </span>
                     <span class="font-mono text-blue-600 font-bold">${s.seconds}s</span>
                 </div>
-            `).join('') || '<p class="text-center text-slate-400 py-4 italic">Chưa có kỷ lục nào</p>';
+            `).join('') || '<p class="text-center text-slate-400 py-4 italic text-sm">Chưa có kỷ lục nào</p>';
         }
 
         window.saveScore = async (name, time) => {
-            if (!window.currentUser) return;
+            if (!authReady || !window.currentUser) {
+                console.error("Chưa đăng nhập, không thể lưu điểm.");
+                alert("Đang kết nối lại máy chủ, vui lòng đợi giây lát...");
+                return;
+            }
             try {
                 const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
                 await addDoc(leaderboardCol, {
@@ -85,14 +134,16 @@
                     timestamp: Date.now(),
                     userId: window.currentUser.uid
                 });
+                console.log("Đã lưu điểm thành công!");
             } catch (error) {
-                console.error("Save Error:", error);
+                console.error("Lỗi khi lưu điểm:", error);
+                alert("Lỗi: Không có quyền ghi dữ liệu. Hãy kiểm tra Rules trên Firebase.");
             }
         };
 
-        // Hàm xóa toàn bộ sử dụng WriteBatch để tối ưu hiệu suất
         window.clearAllResults = async () => {
             if (!confirm("Bạn có chắc chắn muốn xóa TOÀN BỘ kết quả không?")) return;
+            if (!authReady) return;
             
             try {
                 const leaderboardCol = collection(db, 'artifacts', appId, 'public', 'data', 'leaderboard');
@@ -112,8 +163,8 @@
                 alert("Đã dọn dẹp bảng xếp hạng thành công!");
                 closeAdminModal();
             } catch (error) {
-                console.error("Delete Error:", error);
-                alert("Lỗi: Không thể xóa dữ liệu. Hãy kiểm tra lại 'Rules' trong Firebase Console của bạn.");
+                console.error("Lỗi khi xóa:", error);
+                alert("Lỗi: " + error.message);
             }
         };
     </script>
@@ -129,7 +180,6 @@
     </style>
 </head>
 <body class="bg-slate-50 min-h-screen p-2 md:p-8 font-sans text-gray-800">
-    <!-- Màn hình nhập tên -->
     <div id="login-screen" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
         <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-100">
             <div class="text-center mb-6">
@@ -152,7 +202,6 @@
     </div>
 
     <div class="max-w-7xl mx-auto blur-sm flex flex-col lg:flex-row gap-8" id="main-content">
-        <!-- Game Column -->
         <div class="flex-1">
             <header class="text-center mb-6">
                 <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 mb-2">Ghép 3 Cột Từ Vựng</h1>
@@ -175,7 +224,6 @@
             </div>
         </div>
 
-        <!-- Leaderboard Column -->
         <div class="w-full lg:w-80 shrink-0">
             <div class="bg-white rounded-3xl shadow-xl border border-slate-100 p-6 sticky top-8">
                 <div class="flex items-center gap-2 mb-6">
@@ -186,7 +234,7 @@
                     </div>
                     <h3 class="font-bold text-lg text-slate-800">Top 10 Kỷ Lục</h3>
                 </div>
-                <div id="leaderboard-list" class="space-y-1 mb-6">
+                <div id="leaderboard-list" class="space-y-1 mb-6 text-sm">
                     <div class="animate-pulse flex flex-col gap-2">
                         <div class="h-10 bg-slate-100 rounded-lg"></div>
                         <div class="h-10 bg-slate-100 rounded-lg"></div>
@@ -203,9 +251,9 @@
         </div>
     </div>
 
-    <!-- Modal Admin Auth -->
+    <!-- Modals -->
     <div id="admin-auth-modal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
-        <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-sm:max-w-xs">
             <h3 class="text-xl font-bold text-slate-800 mb-4">Xác minh Giáo viên</h3>
             <input type="password" id="admin-password" class="w-full p-3 border-2 border-slate-200 rounded-xl mb-4 focus:border-blue-500 outline-none" placeholder="Mật khẩu (01026018)">
             <div class="flex gap-3">
@@ -215,13 +263,12 @@
         </div>
     </div>
 
-    <!-- Modal Admin Dashboard -->
     <div id="admin-dashboard-modal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
         <div class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
             <div class="p-6 border-b flex justify-between items-center bg-slate-50">
                 <div>
                     <h3 class="text-xl font-bold text-slate-800">Bảng điều khiển Giáo viên</h3>
-                    <p class="text-sm text-slate-500">Xem và quản lý tất cả kết quả bài làm</p>
+                    <p class="text-sm text-slate-500">Quản lý kết quả bài làm</p>
                 </div>
                 <button onclick="closeAdminModal()" class="text-slate-400 hover:text-slate-600">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -234,27 +281,23 @@
             </div>
             <div class="p-6 border-t flex justify-between items-center bg-white">
                 <button onclick="window.clearAllResults()" class="flex items-center gap-2 text-red-500 font-bold hover:bg-red-50 px-4 py-2 rounded-xl transition-all border border-red-100">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                    Xóa sạch dữ liệu bài làm
+                    Xóa sạch dữ liệu
                 </button>
                 <p id="total-players" class="text-slate-400 text-sm font-medium"></p>
             </div>
         </div>
     </div>
 
-    <!-- Win Message -->
     <div id="win-message" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-md flex items-center justify-center z-50">
         <div class="bg-white p-10 rounded-2xl shadow-2xl text-center max-w-sm mx-4 border-2 border-green-500">
             <div class="text-6xl mb-4">🎉</div>
             <h2 class="text-2xl font-bold text-slate-900 mb-2" id="congrats-name">Chúc mừng!</h2>
             <div class="bg-slate-50 p-4 rounded-xl mb-6 border border-slate-100 mt-4">
-                <p class="text-sm text-slate-500 uppercase font-bold">Thời gian của bạn</p>
+                <p class="text-sm text-slate-500 uppercase font-bold">Thời gian</p>
                 <p id="final-time-display" class="text-3xl font-black text-blue-600"></p>
             </div>
             <button onclick="location.reload()" class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 px-6 rounded-xl transition shadow-lg">
-                Chơi lại từ đầu
+                Chơi lại
             </button>
         </div>
     </div>
@@ -405,7 +448,6 @@
             }, 800);
         }
 
-        // Admin Helpers
         function openAdminAuth() {
             document.getElementById('admin-auth-modal').classList.remove('hidden');
             document.getElementById('admin-password').focus();
